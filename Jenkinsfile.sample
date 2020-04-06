@@ -1,0 +1,92 @@
+#!/usr/bin/env groovy
+
+def uniqId = "jenkins-slave-${UUID.randomUUID().toString()[0..12]}"
+println(uniqId)
+def JOB_NAME = "${env.JOB_NAME}#${env.BUILD_NUMBER}"
+i
+timestamps {
+timeout(time: 60, unit: 'MINUTES') {
+
+podTemplate(
+    label: uniqId,
+    nodeSelector: "node-pool=jenkins-slaves",
+    containers: [
+        containerTemplate(
+            name: "backend-builder",
+            image: "YOUR_IMAGE",
+            ttyEnabled: true,
+            resourceRequestCpu: "1",
+            resourceRequestMemory: "500Mi",
+            command: "cat"
+        ),
+        containerTemplate(
+            name: "cloudsql-proxy",
+            image: "gcr.io/cloudsql-docker/gce-proxy:1.13",
+            ttyEnabled: true,
+            resourceRequestCpu: "100m",
+            resourceRequestMemory: "100Mi",
+            command: "cat"
+        ),
+    ],
+    ){ //*/
+
+
+node(uniqId) {
+        try {
+          sh 'env'
+          currentBuild.displayName = "${env.BUILD_NUMBER}"
+          withCredentials([
+          usernamePassword(
+             credentialsId: "competitors_base_user_pass",
+             usernameVariable: "DB_USER",
+             passwordVariable: "DB_PASS"),
+          sshUserPrivateKey(
+              credentialsId: "git_t_ssh",
+              keyFileVariable: "SSH_KEY_FILE",
+              passphraseVariable: "",
+              usernameVariable: ""),    
+                    file(
+                            credentialsId: "dwh-loader-jenkins",
+                            variable: "GOOGLE_APPLICATION_CREDENTIALS"),    
+          ]) {
+          
+          stage('cloudsql-proxy') {
+             container('cloudsql-proxy') {
+               sh "ip a"
+               sh "cat /etc/hostname"
+               sh "cat /etc/hosts"
+               sh "/cloud_sql_proxy --dir=/cloudsql -instances=amaiz-analytics:europe-west2:web-analytics-clouf-functions=tcp:0.0.0.0:5432 &"
+             }
+           }
+          stage('check-competitors') {
+            container('backend-builder') {
+              sh """
+                 export DB_NAME=db
+                 export HOOK=YOUR_HOOK
+                 export URLS="https://getcoconut.com/pricing/,https://getcoconut.com/terms/version-5-0/,https://trello.com/b/U0JQpdnQ/,https://www.tide.co/privacy/,https://countingup.com/terms/,https://www.revolut.codes/our-plans,https://www.revolut.codes/business/help,https://www.starlingbank.com/legal/,https://www.starlingbank.com/business-account/,https://trello.com/b/7xGZ4SVL/anna-money-product-roadmap,https://anna.money/pricing,https://anna.money/terms-and-conditions,https://www.starlingbank.com/docs/Account-Schedule-BCA-Multi-and-Sole.pdf"
+                 export DB_CONNECTION=127.0.0.1
+                 export GIT_SSH_COMMAND="ssh -i $SSH_KEY_FILE -o StrictHostKeyChecking=no"
+                 git clone ssh://git@<THIS_REPO>.git
+                 apt update && apt install -y libpq-dev python3-pip
+                 #pip3 install requests
+                 cd ./competitors-parser  
+                 pip3 install -r ./requirements.txt
+                 pip3 install bs4
+                 python3 main.py
+              """
+            }
+          }
+          } 
+       } catch(err) {
+            currentBuild.result = 'FAILURE'
+            println(err)
+       } finally {
+            currentBuild.result = currentBuild.result ?: 'SUCCESS'
+
+       }
+
+} //node
+} //podtemplate
+} //timeout
+} //timestamps
+
